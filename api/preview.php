@@ -94,12 +94,11 @@ for ($p = 0; $p < $labelPages; $p++) {
     }
 }
 
-// Sticker layout: fill free cells on label pages first, then overflow to extra pages
+// Sticker layout: fill free cells on label pages ONLY (no overflow pages)
 $stickerLayout = [];
 $stickerIdx    = 0;
 
 for ($p = 0; $p < $labelPages; $p++) {
-    // Filled slots on this page
     $filledRects = [];
     for ($s = 0; $s < $slotsPerPage; $s++) {
         if ($p*$slotsPerPage + $s < $totalLabels)
@@ -113,51 +112,35 @@ for ($p = 0; $p < $labelPages; $p++) {
                     $blocked = true; break;
                 }
             }
-            if (!$blocked) {
-                $entry = ['page'=>$p+1,'x_mm'=>round($tx,4),'y_mm'=>round($ty,4),'w_mm'=>STK_W,'h_mm'=>STK_H,'sticker_name'=>null,'img_path'=>null];
-                if ($stickerIdx < $totalStickers) {
-                    $entry['sticker_name'] = $stickerSlots[$stickerIdx]['name'];
-                    $entry['img_path']     = $stickerSlots[$stickerIdx]['img_path'];
-                    $stickerIdx++;
-                }
-                $stickerLayout[] = $entry;
+            $entry = ['page'=>$p+1,'x_mm'=>round($tx,4),'y_mm'=>round($ty,4),'w_mm'=>STK_W,'h_mm'=>STK_H,'sticker_name'=>null,'img_path'=>null];
+            if (!$blocked && $stickerIdx < $totalStickers) {
+                $entry['sticker_name'] = $stickerSlots[$stickerIdx]['name'];
+                $entry['img_path']     = $stickerSlots[$stickerIdx]['img_path'];
+                $stickerIdx++;
             }
+            if (!$blocked) $stickerLayout[] = $entry;
         }
     }
 }
 
-// Overflow sticker pages (all stickers, no labels)
-$stkCols   = max(1, (int)floor($usableW / STK_W));
-$stkRows   = max(1, (int)floor($usableH / STK_H));
-$stkStartX = $margin + ($usableW - $stkCols*STK_W) / 2;
-$stkStartY = $margin + ($usableH - $stkRows*STK_H) / 2;
-while ($stickerIdx < $totalStickers) {
-    $totalPages++;
-    $pageNum = $totalPages;
-    for ($row = 0; $row < $stkRows && $stickerIdx < $totalStickers; $row++) {
-        for ($col = 0; $col < $stkCols && $stickerIdx < $totalStickers; $col++) {
-            $stickerLayout[] = [
-                'page'         => $pageNum,
-                'x_mm'         => round($stkStartX + $col*STK_W, 4),
-                'y_mm'         => round($stkStartY + $row*STK_H, 4),
-                'w_mm'         => STK_W, 'h_mm' => STK_H,
-                'sticker_name' => $stickerSlots[$stickerIdx]['name'],
-                'img_path'     => $stickerSlots[$stickerIdx]['img_path'],
-            ];
-            $stickerIdx++;
-        }
-    }
-}
+// Count free cells on page 1 (for auto-fill UI hint)
+$freeCellsPage1 = count(array_filter($stickerLayout, fn($e) => $e['page'] === 1));
+
+// Per-page free cell counts for auto-fill UI
+$freeCellsPerPage = [];
+for ($p = 1; $p <= $totalPages; $p++)
+    $freeCellsPerPage[$p] = count(array_filter($stickerLayout, fn($e) => $e['page'] === $p));
 
 echo json_encode([
-    'pages'          => $totalPages,
-    'slots_per_page' => $slotsPerPage,
-    'label_w_mm'     => $lw,
-    'label_h_mm'     => $lh,
-    'total_labels'   => $totalLabels,
-    'filled'         => $totalLabels,
-    'empty'          => max(0, $labelPages*$slotsPerPage - $totalLabels),
-    'layout'         => $layout,
-    'sticker_layout' => $stickerLayout,
-    'errors'         => array_values(array_filter($parsed, fn($p)=>isset($p['error']))),
+    'pages'               => $totalPages,
+    'slots_per_page'      => $slotsPerPage,
+    'free_cells_per_page' => $freeCellsPerPage,
+    'label_w_mm'          => $lw,
+    'label_h_mm'          => $lh,
+    'total_labels'        => $totalLabels,
+    'filled'              => $totalLabels,
+    'empty'               => max(0, $labelPages*$slotsPerPage - $totalLabels),
+    'layout'              => $layout,
+    'sticker_layout'      => $stickerLayout,
+    'errors'              => array_values(array_filter($parsed, fn($p)=>isset($p['error']))),
 ]);

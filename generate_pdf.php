@@ -70,12 +70,6 @@ for ($s = 0; $s < $slotsPerPage; $s++) {
     $allSlotPos[$s] = [$x,$y,$w,$h];
 }
 
-// Overflow sticker page geometry (full page, no labels)
-$stkCols   = max(1, (int)floor($usableW / STK_W));
-$stkRows   = max(1, (int)floor($usableH / STK_H));
-$stkStartX = $margin + ($usableW - $stkCols*STK_W) / 2;
-$stkStartY = $margin + ($usableH - $stkRows*STK_H) / 2;
-
 // GD rotate 90° CW
 $rotCache = [];
 function getRotatedPath(string $path, string $ext): string {
@@ -160,23 +154,6 @@ for ($pageIdx = 0; $pageIdx < $labelPages; $pageIdx++) {
         } else {
             $rp = getRotatedPath($path, $ext);
             $pdf->Image($rp, $x-$bleed, $y-$bleed, $w+2*$bleed, $h+2*$bleed, $type,'','N',false,0,'',false,false,0);
-        }
-    }
-}
-
-// ── Overflow sticker pages ──
-while ($stickerIdx < count($stickerSlots)) {
-    $pdf->AddPage();
-    for ($row = 0; $row < $stkRows && $stickerIdx < count($stickerSlots); $row++) {
-        for ($col = 0; $col < $stkCols && $stickerIdx < count($stickerSlots); $col++) {
-            $stk  = $stickerSlots[$stickerIdx++];
-            $path = $stk['img_path'];
-            if (!$path || !file_exists($path)) continue;
-            $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-            $type = ($ext==='png') ? 'PNG' : 'JPEG';
-            $tx   = $stkStartX + $col * STK_W;
-            $ty   = $stkStartY + $row * STK_H;
-            $pdf->Image($path, $tx, $ty, STK_W, STK_H, $type,'','N',false,0,'',false,false,0);
         }
     }
 }

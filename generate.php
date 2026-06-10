@@ -110,6 +110,10 @@ pageHeader('Generate PDF', 'generate');
       <div class="batch-rows" id="stickerRows"></div>
       <?php if (!empty($stickers)): ?>
       <button class="add-row-btn" onclick="addStickerRow()">+ Add Sticker</button>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding-top:2px">
+        <input type="checkbox" id="autoFillStickers" onchange="onAutoFillChange()">Fill all free slots automatically
+      </label>
+      <div id="autoFillInfo" style="font-size:11px;color:#999;display:none"></div>
       <?php endif ?>
     </div>
 
@@ -255,7 +259,7 @@ document.getElementById('gap').addEventListener('input', schedulePreview);
 
 async function fetchPreview() {
   const batch       = getBatchString('batchRows');
-  const stkBatch    = getBatchString('stickerRows');
+  const stkBatch    = getEffectiveStickerBatch();
   const margin      = document.getElementById('margin').value;
   const gap         = document.getElementById('gap').value;
   if (!batch && !stkBatch) { resetCanvas(); return; }
@@ -268,19 +272,82 @@ async function fetchPreview() {
   totalPages  = data.pages || 1;
   currentPage = Math.min(currentPage, totalPages);
 
+  // If auto-fill is on, update qty inputs to match free cells per page then re-fetch
+  if (document.getElementById('autoFillStickers')?.checked) {
+    const totalFree = Object.values(data.free_cells_per_page || {}).reduce((a,b)=>a+b, 0);
+    updateAutoFillQty(totalFree);
+    updateAutoFillInfo(data);
+    // Re-fetch only if qty actually changed (prevents infinite loop)
+    const newBatch = getEffectiveStickerBatch();
+    if (newBatch !== stkBatch) {
+      const res2 = await fetch('api/preview.php?batch=' + encodeURIComponent(batch) +
+        '&sticker_batch=' + encodeURIComponent(newBatch) + '&margin=' + margin + '&gap=' + gap);
+      const data2 = await res2.json();
+      layoutData = data2; totalPages = data2.pages || 1;
+      currentPage = Math.min(currentPage, totalPages);
+      updateStats(data2); showErrors(data2.errors || []);
+      buildPageAssignments(data2);
+      renderSlotEditor(currentPage); drawPage(currentPage); updatePageNav();
+      return;
+    }
+  }
+
+  updateStats(data);
+  showErrors(data.errors || []);
+  buildPageAssignments(data);
+  renderSlotEditor(currentPage);
+  drawPage(currentPage);
+  updatePageNav();
+}
+
+function buildPageAssignments(data) {
   pageAssignments = {};
-  for (let p = 1; p <= totalPages; p++) {
+  for (let p = 1; p <= (data.pages||1); p++) {
     const pg = data.layout.filter(s => s.page === p).sort((a,b) => a.slot - b.slot);
     pageAssignments[p] = pg.map(s => s.label_name
       ? { label_name: s.label_name, label_code: s.label_code, img_path: s.img_path }
       : null);
   }
+}
 
-  updateStats(data);
-  showErrors(data.errors || []);
-  renderSlotEditor(currentPage);
-  drawPage(currentPage);
-  updatePageNav();
+function getEffectiveStickerBatch() {
+  if (document.getElementById('autoFillStickers')?.checked) {
+    // Use current qty from auto-fill inputs
+    return getBatchString('stickerRows');
+  }
+  return getBatchString('stickerRows');
+}
+
+function updateAutoFillQty(totalFree) {
+  // Distribute totalFree across sticker rows proportionally (or just set first row)
+  const rows = document.querySelectorAll('#stickerRows .batch-row');
+  if (!rows.length) return;
+  // If single sticker type: set its qty to totalFree
+  if (rows.length === 1) {
+    rows[0].querySelector('input').value = totalFree;
+    return;
+  }
+  // Multiple types: distribute evenly, remainder to last
+  const each = Math.floor(totalFree / rows.length);
+  let rem    = totalFree - each * rows.length;
+  rows.forEach((row, i) => {
+    row.querySelector('input').value = each + (i === rows.length-1 ? rem : 0);
+  });
+}
+
+function updateAutoFillInfo(data) {
+  const el = document.getElementById('autoFillInfo');
+  if (!el) return;
+  const free = Object.values(data.free_cells_per_page || {}).reduce((a,b)=>a+b,0);
+  el.style.display = 'block';
+  el.textContent   = free + ' free slot' + (free!==1?'s':'') + ' across ' + (data.pages||0) + ' page' + ((data.pages||0)!==1?'s':'');
+}
+
+function onAutoFillChange() {
+  const on  = document.getElementById('autoFillStickers').checked;
+  const btn = document.querySelector('#stickerRows')?.nextElementSibling;
+  document.getElementById('autoFillInfo').style.display = on ? 'block' : 'none';
+  schedulePreview();
 }
 
 function renderSlotEditor(pageNum) {
@@ -330,11 +397,7 @@ function renderSlotEditor(pageNum) {
 
 function resetAssignments() {
   if (!layoutData) return;
-  pageAssignments = {};
-  for (let p = 1; p <= totalPages; p++) {
-    const pg = layoutData.layout.filter(s => s.page === p).sort((a,b) => a.slot - b.slot);
-    pageAssignments[p] = pg.map(s => s.label_name ? { label_name: s.label_name, label_code: s.label_code, img_path: s.img_path } : null);
-  }
+  buildPageAssignments(layoutData);
   renderSlotEditor(currentPage); drawPage(currentPage); recalcStats();
 }
 
@@ -470,7 +533,6 @@ function submitPDF() {
   const batch    = getBatchString('batchRows');
   const stkBatch = getBatchString('stickerRows');
   if (!batch && !stkBatch) { alert('Please add at least one label or sticker.'); return; }
-
   const slotMap = {};
   Object.entries(pageAssignments).forEach(([pageNum, assigns]) => {
     assigns.forEach((a, slotIdx) => {
