@@ -9,9 +9,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') { header('Location: generate.php'); e
 $batchText = trim($_POST['batch']  ?? '');
 $bleed     = max(0, (float)($_POST['bleed']  ?? 0));
 $margin    = max(0, (float)($_POST['margin'] ?? 3));
-$gap       = max(0, (float)($_POST['gap']    ?? 4.5));
-$forceCols = max(0, (int)($_POST['cols']   ?? 0));
-$forceRows = max(0, (int)($_POST['rows']   ?? 0));
+$gap       = max(0, (float)($_POST['gap']    ?? 3));
 $dpi       = in_array((int)($_POST['dpi'] ?? 300), [150, 300]) ? (int)$_POST['dpi'] : 300;
 
 $db     = getDB();
@@ -26,10 +24,41 @@ foreach ($parsed as $item) {
 
 if (empty($slots)) { ob_end_clean(); die('No valid labels in batch input.'); }
 
-$refLabel     = $slots[0];
-$grid         = calculateGrid((float)$refLabel['width_mm'], (float)$refLabel['height_mm'], 210, 297, $margin, $gap, $forceCols, $forceRows);
-$slotsPerPage = $grid['slots'];
+$ref = $slots[0];
+$lw  = (float)$ref['width_mm'];
+$lh  = (float)$ref['height_mm'];
+
+$usableW = 210 - 2 * $margin;
+$usableH = 297 - 2 * $margin;
+$totalW  = 2 * $lw + $lh + 2 * $gap;
+$startX  = $margin + ($usableW - $totalW) / 2;
+$nGridH  = 6 * ($lh + $gap) - $gap;
+$nStartY = $margin + ($usableH - $nGridH) / 2;
+$rGridH  = 4 * ($lw + $gap) - $gap;
+$rStartY = $margin + ($usableH - $rGridH) / 2;
+$rStartX = $startX + 2 * ($lw + $gap);
+
+$slotsPerPage = 16;
 $totalPages   = (int)ceil(count($slots) / $slotsPerPage);
+
+// GD rotate 90° CW and cache to temp file
+$rotCache = [];
+function getRotatedPath(string $path, string $ext): string {
+    global $rotCache;
+    if (isset($rotCache[$path])) return $rotCache[$path];
+    $src     = ($ext === 'png') ? imagecreatefrompng($path) : imagecreatefromjpeg($path);
+    $rotated = imagerotate($src, -90, 0); // negative = CW
+    $tmp     = tempnam(sys_get_temp_dir(), 'lbl_') . '.' . $ext;
+    if ($ext === 'png') {
+        imagesavealpha($rotated, true);
+        imagepng($rotated, $tmp, 0);
+    } else {
+        imagejpeg($rotated, $tmp, 95);
+    }
+    imagedestroy($src);
+    imagedestroy($rotated);
+    return $rotCache[$path] = $tmp;
+}
 
 ob_end_clean();
 
@@ -49,37 +78,30 @@ for ($pageIdx = 0; $pageIdx < $totalPages; $pageIdx++) {
         if ($slotIdx >= count($slots)) break;
 
         $label = $slots[$slotIdx];
-        $col   = $s % $grid['cols'];
-        $row   = (int)floor($s / $grid['cols']);
-
-        $x = $grid['startX'] + $col * $grid['cellW'];
-        $y = $grid['startY'] + $row * $grid['cellH'];
-        $w = $label['width_mm'];
-        $h = $label['height_mm'];
-
-        // Bleed expands render box inward from cell boundary, never overlapping gap
-        $maxBleed = $grid['gap'] / 2;
-        $b  = min($bleed, $maxBleed);
-        $rx = $x - $b;
-        $ry = $y - $b;
-        $rw = $w + 2 * $b;
-        $rh = $h + 2 * $b;
-
-        $path = $label['svg_path']; // column still named svg_path in DB
+        $path  = $label['svg_path'];
         if (!file_exists($path)) continue;
-
         $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));
         $type = ($ext === 'png') ? 'PNG' : 'JPEG';
 
-        try {
-            $pdf->Image($path, $rx, $ry, $rw, $rh, $type, '', 'N', true, $dpi, '', false, false, 0);
-        } catch (Exception $e) {
-            $pdf->SetDrawColor(180);
-            $pdf->SetLineWidth(0.2);
-            $pdf->Rect($x, $y, $w, $h);
+        if ($s < 12) {
+            $col = $s % 2;
+            $row = (int)floor($s / 2);
+            $x   = $startX + $col * ($lw + $gap);
+            $y   = $nStartY + $row * ($lh + $gap);
+            $pdf->Image($path, $x - $bleed, $y - $bleed, $lw + 2*$bleed, $lh + 2*$bleed, $type, '', 'N', true, $dpi, '', false, false, 0);
+        } else {
+            $row     = $s - 12;
+            $x       = $rStartX;
+            $y       = $rStartY + $row * ($lw + $gap);
+            $rotPath = getRotatedPath($path, $ext);
+            // After 90° CW rotation: original lw becomes height, lh becomes width
+            $pdf->Image($rotPath, $x - $bleed, $y - $bleed, $lh + 2*$bleed, $lw + 2*$bleed, $type, '', 'N', true, $dpi, '', false, false, 0);
         }
     }
 }
+
+// Clean up temp files
+foreach ($rotCache as $tmp) @unlink($tmp);
 
 $filename = 'ovxi_labels_' . date('Ymd_His') . '.pdf';
 $pdf->Output($filename, 'D');

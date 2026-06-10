@@ -96,18 +96,12 @@ pageHeader('Generate PDF', 'generate');
       </div>
       <div class="settings-row">
         <div>
-          <label class="field-label">Columns</label>
-          <input type="number" id="cols" value="2" min="1" max="20" step="1">
-        </div>
-        <div>
-          <label class="field-label">Rows</label>
-          <input type="number" id="rows" value="6" min="1" max="30" step="1">
-        </div>
-      </div>
-      <div class="settings-row">
-        <div>
           <label class="field-label">Gap (mm)</label>
-          <input type="number" id="gap" value="4.5" min="0" max="10" step="0.5">
+          <input type="number" id="gap" value="3" min="0" max="10" step="0.5">
+        </div>
+        <div>
+          <label class="field-label">Margin (mm)</label>
+          <input type="number" id="margin" value="3" min="0" max="20" step="1">
         </div>
       </div>
     </div>
@@ -128,8 +122,6 @@ pageHeader('Generate PDF', 'generate');
       <input type="hidden" name="bleed"      id="fBleed">
       <input type="hidden" name="dpi"        id="fDpi">
       <input type="hidden" name="margin"     id="fMargin">
-      <input type="hidden" name="cols"       id="fCols">
-      <input type="hidden" name="rows"       id="fRows">
       <input type="hidden" name="gap"        id="fGap">
       <button type="button" class="primary" style="width:100%;padding:10px" onclick="submitPDF()">Export PDF</button>
     </form>
@@ -172,18 +164,14 @@ function schedulePreview() {
 document.getElementById('batchInput').addEventListener('input', schedulePreview);
 document.getElementById('margin').addEventListener('input', schedulePreview);
 document.getElementById('gap').addEventListener('input', schedulePreview);
-document.getElementById('cols').addEventListener('input', schedulePreview);
-document.getElementById('rows').addEventListener('input', schedulePreview);
 
 async function fetchPreview() {
   const batch  = document.getElementById('batchInput').value.trim();
   const margin = document.getElementById('margin').value;
   const gap    = document.getElementById('gap').value;
-  const cols   = document.getElementById('cols').value;
-  const rows   = document.getElementById('rows').value;
   if (!batch) { resetCanvas(); return; }
 
-  const res  = await fetch('api/preview.php?batch=' + encodeURIComponent(batch) + '&margin=' + margin + '&gap=' + gap + '&cols=' + cols + '&rows=' + rows);
+  const res  = await fetch('api/preview.php?batch=' + encodeURIComponent(batch) + '&margin=' + margin + '&gap=' + gap);
   const data = await res.json();
 
   // Dimensions come directly from preview API response
@@ -232,54 +220,41 @@ async function drawPage(pageNum) {
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   drawBorder();
-  if (!layoutData || !layoutData.layout || !layoutData.cols) return;
-
-  const lw = layoutData.label_w_mm;
-  const lh = layoutData.label_h_mm;
-  const gap = layoutData.gap_mm;
-  if (!lw || !lh) return;
-
-  // Use startX/Y and cellW/H directly from API — identical to PHP
-  const startX = layoutData.startX;
-  const startY = layoutData.startY;
-  const cellW  = layoutData.cellW;
-  const cellH  = layoutData.cellH;
+  if (!layoutData || !layoutData.layout) return;
 
   const pageSlots = layoutData.layout.filter(s => s.page === pageNum);
-
   const uniquePaths = [...new Set(pageSlots.filter(s => s.img_path).map(s => s.img_path))];
   await Promise.all(uniquePaths.map(p => loadImg(p)));
 
   pageSlots.forEach(slot => {
-    const x = (startX + slot.col * cellW) * MM2PX;
-    const y = (startY + slot.row * cellH) * MM2PX;
-    const w = lw * MM2PX;
-    const h = lh * MM2PX;
+    const x = slot.x_mm * MM2PX;
+    const y = slot.y_mm * MM2PX;
+    const w = slot.w_mm * MM2PX;
+    const h = slot.h_mm * MM2PX;
+    const img = slot.img_path ? imgCache[slot.img_path] : null;
 
-    if (slot.img_path && imgCache[slot.img_path]) {
-      ctx.drawImage(imgCache[slot.img_path], x, y, w, h);
-    } else if (slot.label_name) {
-      ctx.fillStyle = '#f0f0f0';
-      ctx.fillRect(x, y, w, h);
+    if (slot.rotated && img) {
+      // 90° CW: translate to slot centre, rotate, draw centred
       ctx.save();
-      ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-      ctx.fillStyle    = '#000';
-      ctx.font         = 'bold ' + Math.max(7, Math.min(11, w / 8)) + 'px system-ui,sans-serif';
-      ctx.textAlign    = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(slot.label_name, x + w / 2, y + h / 2, w - 4);
+      ctx.translate(x + w / 2, y + h / 2);
+      ctx.rotate(Math.PI / 2);
+      ctx.drawImage(img, -h / 2, -w / 2, h, w);
       ctx.restore();
+    } else if (img) {
+      ctx.drawImage(img, x, y, w, h);
     } else {
-      ctx.strokeStyle = '#ddd';
-      ctx.lineWidth   = 0.5;
-      ctx.setLineDash([3, 3]);
+      ctx.fillStyle = slot.label_name ? '#f0f0f0' : '#fff';
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = slot.label_name ? '#000' : '#ddd';
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash(slot.label_name ? [] : [3, 3]);
       ctx.strokeRect(x, y, w, h);
       ctx.setLineDash([]);
     }
   });
 
   document.getElementById('canvasMeta').textContent =
-    'A4 — 210 × 297 mm  |  ' + layoutData.cols + ' × ' + layoutData.rows + ' grid';
+    'A4 — 210 × 297 mm  |  12 normal + 4 rotated = 16 slots';
 }
 
 function changePage(delta) {
@@ -302,8 +277,6 @@ function submitPDF() {
   document.getElementById('fBleed')    .value = document.getElementById('bleed').value;
   document.getElementById('fDpi')      .value = document.getElementById('dpi').value;
   document.getElementById('fMargin')   .value = document.getElementById('margin').value;
-  document.getElementById('fCols')     .value = document.getElementById('cols').value;
-  document.getElementById('fRows')     .value = document.getElementById('rows').value;
   document.getElementById('fGap')      .value = document.getElementById('gap').value;
   document.getElementById('pdfForm').submit();
 }
