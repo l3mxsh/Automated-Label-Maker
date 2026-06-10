@@ -47,14 +47,18 @@ $rotCache = [];
 function getRotatedPath(string $path, string $ext): string {
     global $rotCache;
     if (isset($rotCache[$path])) return $rotCache[$path];
-    $src     = ($ext === 'png') ? imagecreatefrompng($path) : imagecreatefromjpeg($path);
-    $rotated = imagerotate($src, -90, 0); // negative = CW
-    $tmp     = tempnam(sys_get_temp_dir(), 'lbl_') . '.' . $ext;
+    $src = ($ext === 'png') ? imagecreatefrompng($path) : imagecreatefromjpeg($path);
+    // Preserve full color depth
+    imagealphablending($src, false);
+    imagesavealpha($src, true);
+    $rotated = imagerotate($src, -90, 0);
+    imagealphablending($rotated, false);
+    imagesavealpha($rotated, true);
+    $tmp = tempnam(sys_get_temp_dir(), 'lbl_') . '.' . $ext;
     if ($ext === 'png') {
-        imagesavealpha($rotated, true);
-        imagepng($rotated, $tmp, 0);
+        imagepng($rotated, $tmp, 0); // 0 = no compression, maximum quality
     } else {
-        imagejpeg($rotated, $tmp, 95);
+        imagejpeg($rotated, $tmp, 100); // 100 = max JPEG quality
     }
     imagedestroy($src);
     imagedestroy($rotated);
@@ -93,14 +97,14 @@ for ($pageIdx = 0; $pageIdx < $totalPages; $pageIdx++) {
             $row = (int)floor($s / 2);
             $x   = $startX + $col * ($lw + $gap);
             $y   = $nStartY + $row * ($lh + $gap);
-            $pdf->Image($path, $x - $bleed, $y - $bleed, $lw + 2*$bleed, $lh + 2*$bleed, $type, '', 'N', true, $dpi, '', false, false, 0);
+            // resize=false: embed full resolution image, no TCPDF resampling
+            $pdf->Image($path, $x - $bleed, $y - $bleed, $lw + 2*$bleed, $lh + 2*$bleed, $type, '', 'N', false, 0, '', false, false, 0);
         } else {
             $row     = $s - 12;
             $x       = $rStartX;
             $y       = $rStartY + $row * ($lw + $gap);
             $rotPath = getRotatedPath($path, $ext);
-            // After 90° CW rotation: original lw becomes height, lh becomes width
-            $pdf->Image($rotPath, $x - $bleed, $y - $bleed, $lh + 2*$bleed, $lw + 2*$bleed, $type, '', 'N', true, $dpi, '', false, false, 0);
+            $pdf->Image($rotPath, $x - $bleed, $y - $bleed, $lh + 2*$bleed, $lw + 2*$bleed, $type, '', 'N', false, 0, '', false, false, 0);
         }
     }
 }
