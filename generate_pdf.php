@@ -7,7 +7,7 @@ require 'functions.php';
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') { header('Location: generate.php'); exit; }
 
 $batchText = trim($_POST['batch']  ?? '');
-$bleed     = max(0, (float)($_POST['bleed']  ?? 3));
+$bleed     = max(0, (float)($_POST['bleed']  ?? 0));
 $margin    = max(0, (float)($_POST['margin'] ?? 3));
 $gap       = max(0, (float)($_POST['gap']    ?? 4.5));
 $forceCols = max(0, (int)($_POST['cols']   ?? 0));

@@ -16,7 +16,7 @@ pageHeader('Generate PDF', 'generate');
 .si-preview img{max-width:160px;max-height:72px;object-fit:contain}
 .si-preview .no-sel{font-size:12px;color:#bbb}
 .center{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;align-items:center;gap:12px}
-#a4Canvas{border:0.5px solid #d0d0d0;background:#fff;display:block}
+#a4Canvas{border:0.5px solid #d0d0d0;background:#fff;display:block;width:420px;height:595px}
 .canvas-meta{font-size:12px;color:#666;text-align:center}
 .right-panel{width:260px;border-left:0.5px solid #d0d0d0;overflow-y:auto;flex-shrink:0;padding:16px;display:flex;flex-direction:column;gap:16px}
 .panel-section{display:flex;flex-direction:column;gap:8px}
@@ -60,7 +60,7 @@ pageHeader('Generate PDF', 'generate');
       <span id="pageIndicator">Page 1 / 1</span>
       <button id="nextPage" onclick="changePage(1)">&#8250;</button>
     </div>
-    <canvas id="a4Canvas" width="595" height="842"></canvas>
+    <canvas id="a4Canvas" width="840" height="1190"></canvas>
     <div class="canvas-meta" id="canvasMeta">A4 &mdash; 210 &times; 297 mm</div>
   </div>
 
@@ -81,7 +81,7 @@ pageHeader('Generate PDF', 'generate');
         </div>
         <div>
           <label class="field-label">Bleed (mm)</label>
-          <input type="number" id="bleed" value="3" min="0" max="10" step="0.5">
+          <input type="number" id="bleed" value="0" min="0" max="10" step="0.5">
         </div>
       </div>
       <div class="settings-row">
@@ -139,7 +139,7 @@ pageHeader('Generate PDF', 'generate');
 <script>
 const canvas = document.getElementById('a4Canvas');
 const ctx    = canvas.getContext('2d');
-const MM2PX  = canvas.width / 210;
+const MM2PX  = canvas.width / 210; // 840/210 = 4px per mm — matches A4 exactly
 let currentPage = 1, totalPages = 1, layoutData = null;
 const imgCache = {};
 
