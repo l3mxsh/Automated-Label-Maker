@@ -1,0 +1,12 @@
+CREATE DATABASE IF NOT EXISTS ovxi_labels CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE ovxi_labels;
+
+CREATE TABLE IF NOT EXISTS labels (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    code VARCHAR(10) NOT NULL,
+    svg_path VARCHAR(255) NOT NULL,
+    width_mm FLOAT NOT NULL,
+    height_mm FLOAT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
