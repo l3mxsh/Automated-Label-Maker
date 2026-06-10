@@ -380,33 +380,55 @@ async function drawPage(pageNum) {
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); drawBorder();
   if (!layoutData) return;
 
-  // Collect all image paths to preload
-  const assigns = pageAssignments[pageNum] || [];
-  const metas   = (layoutData.layout||[]).filter(s=>s.page===pageNum).sort((a,b)=>a.slot-b.slot);
+  const STK_W = 50.8, STK_H = 22.098;
+  const margin = parseFloat(document.getElementById('margin').value) || 3;
+
+  const assigns    = pageAssignments[pageNum] || [];
+  const metas      = (layoutData.layout||[]).filter(s=>s.page===pageNum).sort((a,b)=>a.slot-b.slot);
   const labelSlots = metas.map((m,i) => ({...m,...(assigns[i]||{label_name:null,img_path:null})}));
 
-  const stkSlots = (layoutData.sticker_layout||[]).filter(s=>s.page===pageNum);
+  // Recompute free sticker cells from current assignments (not static sticker_layout)
+  // Filled label rects for this page
+  const filledRects = labelSlots
+    .filter(s => s.img_path)
+    .map(s => ({ x: s.x_mm, y: s.y_mm, w: s.w_mm, h: s.h_mm }));
 
+  // All sticker cells ordered the same way as the server
+  const freeCells = [];
+  for (let ty = margin; ty + STK_H <= 297 - margin + 0.001; ty += STK_H) {
+    for (let tx = margin; tx + STK_W <= 210 - margin + 0.001; tx += STK_W) {
+      const blocked = filledRects.some(r => tx < r.x+r.w && tx+STK_W > r.x && ty < r.y+r.h && ty+STK_H > r.y);
+      if (!blocked) freeCells.push({ x_mm: tx, y_mm: ty });
+    }
+  }
+
+  // Sticker images for this page come from sticker_layout (ordered by page)
+  // Count how many sticker cells were consumed by earlier pages
+  let stkOffset = 0;
+  for (let p = 1; p < pageNum; p++) {
+    stkOffset += (layoutData.sticker_layout||[]).filter(s => s.page === p && s.img_path).length;
+  }
+  const allStickerImgs = (layoutData.sticker_layout||[]).filter(s=>s.img_path).map(s=>s.img_path);
+
+  // Build sticker slots for this page by pairing free cells with sticker images
+  const stkSlots = freeCells.map((cell, i) => ({
+    ...cell, w_mm: STK_W, h_mm: STK_H,
+    img_path: allStickerImgs[stkOffset + i] || null
+  })).filter(s => s.img_path);
+
+  // Preload all images
   const allPaths = [
     ...labelSlots.filter(s=>s.img_path).map(s=>s.img_path),
-    ...stkSlots.filter(s=>s.img_path).map(s=>s.img_path),
+    ...stkSlots.map(s=>s.img_path),
   ];
   await Promise.all([...new Set(allPaths)].map(p=>loadImg(p)));
 
-  // Draw stickers first (behind labels)
+  // Draw stickers first
   stkSlots.forEach(slot => {
     const x = slot.x_mm * MM2PX, y = slot.y_mm * MM2PX;
     const w = slot.w_mm * MM2PX, h = slot.h_mm * MM2PX;
-    const img = slot.img_path ? imgCache[slot.img_path] : null;
-    if (img) {
-      ctx.drawImage(img, x, y, w, h);
-    } else {
-      ctx.strokeStyle='#f0e0ff'; ctx.lineWidth=0.5; ctx.setLineDash([3,2]);
-      ctx.strokeRect(x+0.5,y+0.5,w-1,h-1); ctx.setLineDash([]);
-      ctx.fillStyle='#e8d8f8'; ctx.font='8px system-ui,sans-serif';
-      ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.fillText('sticker', x+w/2, y+h/2);
-    }
+    const img = imgCache[slot.img_path];
+    if (img) ctx.drawImage(img, x, y, w, h);
   });
 
   // Draw labels on top
