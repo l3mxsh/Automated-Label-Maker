@@ -21,7 +21,20 @@ pageHeader('Generate PDF', 'generate');
 .right-panel{width:280px;border-left:0.5px solid #d0d0d0;overflow-y:auto;flex-shrink:0;padding:16px;display:flex;flex-direction:column;gap:16px}
 .panel-section{display:flex;flex-direction:column;gap:8px}
 .panel-title{font-size:11px;font-weight:600;color:#999;letter-spacing:.06em;text-transform:uppercase;padding-bottom:6px;border-bottom:0.5px solid #e0e0e0}
-#batchInput{height:120px;resize:vertical;font-size:12px;font-family:monospace;line-height:1.6}
+/* Batch rows */
+.batch-rows{display:flex;flex-direction:column;gap:4px}
+.batch-row{display:flex;align-items:center;gap:4px}
+.batch-row select{flex:1;min-width:0;font-size:12px;padding:4px 6px;border:0.5px solid #d0d0d0;background:#fff;color:#000;cursor:pointer}
+.batch-row select:focus{border-color:#999;outline:none}
+.batch-row .qty-wrap{display:flex;align-items:center;border:0.5px solid #d0d0d0;flex-shrink:0}
+.batch-row .qty-wrap input{width:36px;text-align:center;border:none;outline:none;font-size:12px;padding:4px 2px;-moz-appearance:textfield}
+.batch-row .qty-wrap input::-webkit-outer-spin-button,.batch-row .qty-wrap input::-webkit-inner-spin-button{-webkit-appearance:none}
+.batch-row .qty-wrap button{border:none;background:none;cursor:pointer;padding:0 6px;font-size:14px;color:#666;line-height:28px}
+.batch-row .qty-wrap button:hover{background:#f0f0f0;color:#000}
+.batch-row .rm{border:none;background:none;cursor:pointer;color:#ccc;font-size:14px;padding:0 2px;flex-shrink:0}
+.batch-row .rm:hover{color:#000}
+.add-row-btn{font-size:11px;color:#666;background:none;border:0.5px dashed #d0d0d0;padding:5px;width:100%;cursor:pointer;text-align:center}
+.add-row-btn:hover{background:#f8f8f8;color:#000}
 .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .stat-box{border:0.5px solid #e0e0e0;padding:8px 10px}
 .stat-box .sv{font-size:18px;font-weight:600}
@@ -83,7 +96,8 @@ pageHeader('Generate PDF', 'generate');
   <div class="right-panel">
     <div class="panel-section">
       <div class="panel-title">Batch Input</div>
-      <textarea id="batchInput" placeholder="Eclipse 7&#10;Solace 5&#10;Madagascar 3&#10;BDC: 5"></textarea>
+      <div class="batch-rows" id="batchRows"></div>
+      <button class="add-row-btn" onclick="addBatchRow()">+ Add Label</button>
       <div class="batch-errors" id="batchErrors"></div>
     </div>
 
@@ -160,7 +174,70 @@ const imgCache = {};
 let pageAssignments = {};
 let dragSrcIdx = null;
 
-// ── Image loader ─────────────────────────────────────────────────────────────
+// ── Batch rows ──────────────────────────────────────────────────────────────
+const labelOptions = <?= json_encode(array_map(fn($l) => ['name'=>$l['name'],'svg'=>$l['svg_path']], $labels)) ?>;
+
+function addBatchRow(name = '', qty = 1) {
+  const row = document.createElement('div');
+  row.className = 'batch-row';
+
+  const sel = document.createElement('select');
+  const defOpt = document.createElement('option');
+  defOpt.value = ''; defOpt.textContent = 'Select label…';
+  sel.appendChild(defOpt);
+  labelOptions.forEach(l => {
+    const o = document.createElement('option');
+    o.value = l.name; o.textContent = l.name;
+    if (l.name === name) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.addEventListener('change', schedulePreview);
+
+  const qtyWrap = document.createElement('div');
+  qtyWrap.className = 'qty-wrap';
+
+  const btnMinus = document.createElement('button');
+  btnMinus.type = 'button'; btnMinus.textContent = '−';
+  btnMinus.onclick = () => { numInput.value = Math.max(0, parseInt(numInput.value||0) - 1); schedulePreview(); };
+
+  const numInput = document.createElement('input');
+  numInput.type = 'number'; numInput.min = 0; numInput.max = 999;
+  numInput.value = qty;
+  numInput.addEventListener('input', schedulePreview);
+
+  const btnPlus = document.createElement('button');
+  btnPlus.type = 'button'; btnPlus.textContent = '+';
+  btnPlus.onclick = () => { numInput.value = parseInt(numInput.value||0) + 1; schedulePreview(); };
+
+  qtyWrap.appendChild(btnMinus);
+  qtyWrap.appendChild(numInput);
+  qtyWrap.appendChild(btnPlus);
+
+  const rm = document.createElement('button');
+  rm.type = 'button'; rm.className = 'rm'; rm.textContent = '\u2715';
+  rm.title = 'Remove row';
+  rm.onclick = () => { row.remove(); schedulePreview(); };
+
+  row.appendChild(sel);
+  row.appendChild(qtyWrap);
+  row.appendChild(rm);
+  document.getElementById('batchRows').appendChild(row);
+}
+
+function getBatchString() {
+  const rows = document.querySelectorAll('.batch-row');
+  const lines = [];
+  rows.forEach(row => {
+    const name = row.querySelector('select').value;
+    const qty  = parseInt(row.querySelector('input').value) || 0;
+    if (name && qty > 0) lines.push(name + ' ' + qty);
+  });
+  return lines.join('\n');
+}
+
+// Add one empty row on load
+addBatchRow();
+
 function loadImg(path) {
   if (imgCache[path] !== undefined) return Promise.resolve(imgCache[path]);
   return new Promise(resolve => {
@@ -187,12 +264,11 @@ function schedulePreview() {
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(fetchPreview, 350);
 }
-document.getElementById('batchInput').addEventListener('input', schedulePreview);
 document.getElementById('margin').addEventListener('input', schedulePreview);
 document.getElementById('gap').addEventListener('input', schedulePreview);
 
 async function fetchPreview() {
-  const batch  = document.getElementById('batchInput').value.trim();
+  const batch  = getBatchString();
   const margin = document.getElementById('margin').value;
   const gap    = document.getElementById('gap').value;
   if (!batch) { resetCanvas(); return; }
@@ -435,8 +511,8 @@ function updatePageNav() {
 
 // ── PDF export ───────────────────────────────────────────────────────────────
 function submitPDF() {
-  const batch = document.getElementById('batchInput').value.trim();
-  if (!batch) { alert('Please enter batch input first.'); return; }
+  const batch = getBatchString();
+  if (!batch) { alert('Please add at least one label with quantity.'); return; }
 
   // Build slot_map: pageIdx_slotIdx -> {img_path} or null
   // Only send entries that differ from the original layout
