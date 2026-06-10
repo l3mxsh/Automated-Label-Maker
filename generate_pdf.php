@@ -83,12 +83,16 @@ for ($pageIdx = 0; $pageIdx < $totalPages; $pageIdx++) {
         if ($slotIdx >= count($slots)) break;
 
         $label = $slots[$slotIdx];
-        // Check slot override — key is "pageIdx_slotIndex"
         $overrideKey = $pageIdx . '_' . $s;
-        if (array_key_exists($overrideKey, $slotMap)) continue; // forced empty
-
-        $path  = $label['svg_path'];
-        if (!file_exists($path)) continue;
+        if (array_key_exists($overrideKey, $slotMap)) {
+            if ($slotMap[$overrideKey] === null) continue; // forced empty
+            // Swapped: use override img_path
+            $path = $slotMap[$overrideKey]['img_path'] ?? null;
+            if (!$path || !file_exists($path)) continue;
+        } else {
+            $path = $label['svg_path'];
+            if (!file_exists($path)) continue;
+        }
         $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));
         $type = ($ext === 'png') ? 'PNG' : 'JPEG';
 

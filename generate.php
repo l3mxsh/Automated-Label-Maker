@@ -34,16 +34,18 @@ pageHeader('Generate PDF', 'generate');
 /* Slot editor */
 #slotEditor{display:none}
 .slot-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
-.slot-item{border:0.5px solid #d0d0d0;padding:5px 7px;font-size:11px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:4px;min-height:28px;transition:background .1s}
+.slot-item{border:0.5px solid #d0d0d0;padding:5px 7px;font-size:11px;display:flex;align-items:center;gap:4px;min-height:28px;cursor:grab;user-select:none;transition:background .1s}
 .slot-item:hover{background:#f5f5f5}
 .slot-item.empty{border-style:dashed;color:#bbb}
 .slot-item.rotated-slot{border-left:2px solid #000}
-.slot-item .sn{font-size:10px;color:#bbb;flex-shrink:0}
+.slot-item.dragging{opacity:.3;cursor:grabbing}
+.slot-item.drag-over{outline:1.5px dashed #666;background:#f0f0f0}
+.slot-item .sn{font-size:10px;color:#bbb;flex-shrink:0;min-width:14px}
+.slot-item .grip{font-size:11px;color:#d0d0d0;flex-shrink:0}
 .slot-item .sl-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
-.slot-item .clr{font-size:10px;color:#999;cursor:pointer;padding:0 2px}
+.slot-item .clr{font-size:10px;color:#bbb;cursor:pointer;padding:0 2px;flex-shrink:0;margin-left:auto}
 .slot-item .clr:hover{color:#000}
-.slot-legend{font-size:11px;color:#666;display:flex;gap:12px}
-.slot-legend span{display:flex;align-items:center;gap:4px}
+.slot-legend{font-size:11px;color:#999;line-height:1.6}
 </style>
 
 <div class="gen-layout">
@@ -66,7 +68,7 @@ pageHeader('Generate PDF', 'generate');
     <?php endif ?>
   </div>
 
-  <!-- CENTER: A4 canvas -->
+  <!-- CENTER -->
   <div class="center">
     <div class="page-nav">
       <button id="prevPage" onclick="changePage(-1)">&#8249;</button>
@@ -85,16 +87,12 @@ pageHeader('Generate PDF', 'generate');
       <div class="batch-errors" id="batchErrors"></div>
     </div>
 
-    <!-- SLOT EDITOR -->
     <div class="panel-section" id="slotEditor">
-      <div class="panel-title" style="display:flex;justify-content:space-between">
-        <span>Slot Order — Page <span id="sePageNum">1</span></span>
-        <button style="font-size:10px;padding:2px 7px" onclick="resetSlotOverrides()">Reset</button>
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Slot Order &mdash; Page <span id="sePageNum">1</span></span>
+        <button style="font-size:10px;padding:2px 7px" onclick="resetAssignments()">Reset</button>
       </div>
-      <div class="slot-legend">
-        <span><span style="border-left:2px solid #000;padding-left:3px">■</span> Rotated</span>
-        <span style="color:#bbb">Click &times; to empty a slot</span>
-      </div>
+      <div class="slot-legend">Drag to reorder &bull; &#x2715; to empty &bull; <span style="border-left:2px solid #000;padding-left:3px">&#9632;</span> = rotated</div>
       <div class="slot-grid" id="slotGrid"></div>
     </div>
 
@@ -158,12 +156,13 @@ const MM2PX  = canvas.width / 210;
 let currentPage = 1, totalPages = 1, layoutData = null;
 const imgCache = {};
 
-// slotOverrides: { "pageIdx_slotIdx": null }  — null means forced empty
-// key format: "0_3" = page 1, slot index 3
-let slotOverrides = {};
+// pageAssignments[pageNum] = array of 16 {label_name, img_path} or null per slot
+let pageAssignments = {};
+let dragSrcIdx = null;
 
+// ── Image loader ─────────────────────────────────────────────────────────────
 function loadImg(path) {
-  if (imgCache[path]) return Promise.resolve(imgCache[path]);
+  if (imgCache[path] !== undefined) return Promise.resolve(imgCache[path]);
   return new Promise(resolve => {
     const img = new Image();
     img.onload  = () => { imgCache[path] = img; resolve(img); };
@@ -172,6 +171,7 @@ function loadImg(path) {
   });
 }
 
+// ── Sidebar ──────────────────────────────────────────────────────────────────
 document.querySelectorAll('.sidebar-item').forEach(el => {
   el.addEventListener('click', () => {
     document.querySelectorAll('.sidebar-item').forEach(x => x.classList.remove('active'));
@@ -181,6 +181,7 @@ document.querySelectorAll('.sidebar-item').forEach(el => {
   });
 });
 
+// ── Debounced fetch ──────────────────────────────────────────────────────────
 let debounceTimer;
 function schedulePreview() {
   clearTimeout(debounceTimer);
@@ -203,8 +204,15 @@ async function fetchPreview() {
   totalPages  = data.pages || 1;
   currentPage = Math.min(currentPage, totalPages);
 
-  // Reset overrides when batch changes
-  slotOverrides = {};
+  // Build fresh assignments from layout data
+  pageAssignments = {};
+  for (let p = 1; p <= totalPages; p++) {
+    const pg = data.layout.filter(s => s.page === p).sort((a,b) => a.slot - b.slot);
+    pageAssignments[p] = pg.map(s => s.label_name
+      ? { label_name: s.label_name, label_code: s.label_code, img_path: s.img_path }
+      : null
+    );
+  }
 
   updateStats(data);
   showErrors(data.errors || []);
@@ -215,89 +223,118 @@ async function fetchPreview() {
 
 // ── Slot editor ──────────────────────────────────────────────────────────────
 function renderSlotEditor(pageNum) {
-  if (!layoutData || !layoutData.layout) return;
+  if (!layoutData) return;
   document.getElementById('slotEditor').style.display = 'block';
   document.getElementById('sePageNum').textContent = pageNum;
 
-  const grid     = document.getElementById('slotGrid');
-  const pageSlots = layoutData.layout.filter(s => s.page === pageNum);
-  grid.innerHTML  = '';
+  const grid  = document.getElementById('slotGrid');
+  grid.innerHTML = '';
 
-  pageSlots.forEach((slot, i) => {
-    const key      = (pageNum - 1) + '_' + slot.slot;
-    const isEmpty  = (key in slotOverrides); // forced empty
-    const hasLabel = !isEmpty && slot.label_name;
+  const assigns = pageAssignments[pageNum] || [];
+  const metas   = (layoutData.layout || []).filter(s => s.page === pageNum).sort((a,b) => a.slot - b.slot);
+
+  assigns.forEach((assign, i) => {
+    const meta    = metas[i] || {};
+    const isEmpty = !assign;
 
     const div = document.createElement('div');
-    div.className = 'slot-item' + (isEmpty ? ' empty' : '') + (slot.rotated ? ' rotated-slot' : '');
+    div.className = 'slot-item' + (isEmpty ? ' empty' : '') + (meta.rotated ? ' rotated-slot' : '');
+    div.draggable = true;
 
-    const numEl  = document.createElement('span');
-    numEl.className = 'sn';
-    numEl.textContent = (slot.slot + 1);
+    const numEl = document.createElement('span');
+    numEl.className   = 'sn';
+    numEl.textContent = i + 1;
+
+    const grip = document.createElement('span');
+    grip.className   = 'grip';
+    grip.textContent = '\u2261';
 
     const nameEl = document.createElement('span');
-    nameEl.className = 'sl-name';
-    nameEl.textContent = isEmpty ? '(empty)' : (slot.label_name || '—');
+    nameEl.className   = 'sl-name';
+    nameEl.textContent = isEmpty ? '(empty)' : assign.label_name;
+
+    const btn = document.createElement('span');
+    btn.className   = 'clr';
+    btn.textContent = isEmpty ? '\u21ba' : '\u2715';
+    btn.title       = isEmpty ? 'Restore' : 'Clear';
+    btn.onclick = e => {
+      e.stopPropagation();
+      if (isEmpty) {
+        // Restore from original layoutData
+        const orig = layoutData.layout.find(s => s.page === pageNum && s.slot === i);
+        pageAssignments[pageNum][i] = orig && orig.label_name
+          ? { label_name: orig.label_name, label_code: orig.label_code, img_path: orig.img_path }
+          : null;
+      } else {
+        pageAssignments[pageNum][i] = null;
+      }
+      renderSlotEditor(pageNum);
+      drawPage(pageNum);
+      recalcStats();
+    };
 
     div.appendChild(numEl);
+    div.appendChild(grip);
     div.appendChild(nameEl);
+    div.appendChild(btn);
 
-    if (hasLabel) {
-      const clr = document.createElement('span');
-      clr.className   = 'clr';
-      clr.textContent = '✕';
-      clr.title       = 'Clear this slot';
-      clr.onclick = (e) => {
-        e.stopPropagation();
-        slotOverrides[key] = null;
-        renderSlotEditor(pageNum);
-        drawPage(pageNum);
-        updateStatsFromOverrides();
-      };
-      div.appendChild(clr);
-    } else if (isEmpty) {
-      const rst = document.createElement('span');
-      rst.className   = 'clr';
-      rst.textContent = '↺';
-      rst.title       = 'Restore slot';
-      rst.onclick = (e) => {
-        e.stopPropagation();
-        delete slotOverrides[key];
-        renderSlotEditor(pageNum);
-        drawPage(pageNum);
-        updateStatsFromOverrides();
-      };
-      div.appendChild(rst);
-    }
+    // Drag events
+    div.addEventListener('dragstart', e => {
+      dragSrcIdx = i;
+      div.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    div.addEventListener('dragend', () => {
+      div.classList.remove('dragging');
+      dragSrcIdx = null;
+    });
+    div.addEventListener('dragover', e => {
+      e.preventDefault();
+      div.classList.add('drag-over');
+    });
+    div.addEventListener('dragleave', () => div.classList.remove('drag-over'));
+    div.addEventListener('drop', e => {
+      e.preventDefault();
+      div.classList.remove('drag-over');
+      if (dragSrcIdx === null || dragSrcIdx === i) return;
+      // Swap assignments
+      const tmp = pageAssignments[pageNum][dragSrcIdx];
+      pageAssignments[pageNum][dragSrcIdx] = pageAssignments[pageNum][i];
+      pageAssignments[pageNum][i] = tmp;
+      renderSlotEditor(pageNum);
+      drawPage(pageNum);
+      recalcStats();
+    });
 
     grid.appendChild(div);
   });
 }
 
-function resetSlotOverrides() {
-  slotOverrides = {};
+function resetAssignments() {
+  if (!layoutData) return;
+  pageAssignments = {};
+  for (let p = 1; p <= totalPages; p++) {
+    const pg = layoutData.layout.filter(s => s.page === p).sort((a,b) => a.slot - b.slot);
+    pageAssignments[p] = pg.map(s => s.label_name
+      ? { label_name: s.label_name, label_code: s.label_code, img_path: s.img_path }
+      : null
+    );
+  }
   renderSlotEditor(currentPage);
   drawPage(currentPage);
-  updateStatsFromOverrides();
+  recalcStats();
 }
 
-function updateStatsFromOverrides() {
-  if (!layoutData) return;
-  const forcedEmpty = Object.keys(slotOverrides).filter(k => k.startsWith((currentPage-1)+'_')).length;
-  document.getElementById('stFilled').textContent = (layoutData.filled || 0) - forcedEmpty;
-  document.getElementById('stEmpty') .textContent = (layoutData.empty  || 0) + forcedEmpty;
-}
-
-// Apply overrides to a copy of layout slots for the current page
-function getEffectiveSlots(pageNum) {
-  if (!layoutData) return [];
-  return layoutData.layout
-    .filter(s => s.page === pageNum)
-    .map(s => {
-      const key = (pageNum - 1) + '_' + s.slot;
-      if (key in slotOverrides) return { ...s, label_name: null, label_code: null, img_path: null };
-      return s;
-    });
+function recalcStats() {
+  let filled = 0, empty = 0;
+  Object.values(pageAssignments).forEach(pg => {
+    pg.forEach(a => a ? filled++ : empty++);
+  });
+  const total = Object.values(pageAssignments).reduce((s,p) => s + p.length, 0);
+  document.getElementById('stTotal') .textContent = total;
+  document.getElementById('stFilled').textContent = filled;
+  document.getElementById('stEmpty') .textContent = empty;
+  document.getElementById('stPages') .textContent = totalPages;
 }
 
 // ── Stats ────────────────────────────────────────────────────────────────────
@@ -315,12 +352,12 @@ function showErrors(errors) {
   el.innerHTML = errors.map(e => '&#9888; "' + (e.name || e.raw) + '": ' + e.error).join('<br>');
 }
 
-// ── Canvas ────────────────────────────────────────────────────────────────────
+// ── Canvas ───────────────────────────────────────────────────────────────────
 function resetCanvas() {
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   drawBorder();
-  layoutData = null; totalPages = 1; slotOverrides = {};
+  layoutData = null; totalPages = 1; pageAssignments = {};
   updateStats({pages:0, slots_per_page:0, filled:0, empty:0});
   document.getElementById('pageIndicator').textContent = 'Page 1 / 1';
   document.getElementById('canvasMeta').textContent = 'A4 \u2014 210 \u00d7 297 mm';
@@ -340,9 +377,14 @@ async function drawPage(pageNum) {
   drawBorder();
   if (!layoutData || !layoutData.layout) return;
 
-  const slots = getEffectiveSlots(pageNum);
-  const uniquePaths = [...new Set(slots.filter(s => s.img_path).map(s => s.img_path))];
-  await Promise.all(uniquePaths.map(p => loadImg(p)));
+  const metas   = layoutData.layout.filter(s => s.page === pageNum).sort((a,b) => a.slot - b.slot);
+  const assigns = pageAssignments[pageNum] || [];
+
+  // Merge: position from metas, label/image from assigns
+  const slots = metas.map((m, i) => ({ ...m, ...(assigns[i] || { label_name: null, img_path: null }) }));
+
+  const paths = [...new Set(slots.filter(s => s.img_path).map(s => s.img_path))];
+  await Promise.all(paths.map(p => loadImg(p)));
 
   slots.forEach(slot => {
     const x   = slot.x_mm * MM2PX;
@@ -351,23 +393,23 @@ async function drawPage(pageNum) {
     const h   = slot.h_mm * MM2PX;
     const img = slot.img_path ? imgCache[slot.img_path] : null;
 
-    if (slot.rotated && img) {
-      ctx.save();
-      ctx.translate(x + w / 2, y + h / 2);
-      ctx.rotate(Math.PI / 2);
-      ctx.drawImage(img, -h / 2, -w / 2, h, w);
-      ctx.restore();
-    } else if (img) {
-      ctx.drawImage(img, x, y, w, h);
+    if (img) {
+      if (slot.rotated) {
+        ctx.save();
+        ctx.translate(x + w / 2, y + h / 2);
+        ctx.rotate(Math.PI / 2);
+        ctx.drawImage(img, -h / 2, -w / 2, h, w);
+        ctx.restore();
+      } else {
+        ctx.drawImage(img, x, y, w, h);
+      }
     } else {
-      // Empty or no image: draw outline
-      ctx.strokeStyle = slot.label_name ? '#aaa' : '#e0e0e0';
+      ctx.strokeStyle = '#e0e0e0';
       ctx.lineWidth   = 0.5;
-      ctx.setLineDash(slot.label_name ? [] : [4, 3]);
+      ctx.setLineDash([4, 3]);
       ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
       ctx.setLineDash([]);
-      // Slot number
-      ctx.fillStyle    = '#ccc';
+      ctx.fillStyle    = '#ddd';
       ctx.font         = '10px system-ui,sans-serif';
       ctx.textAlign    = 'center';
       ctx.textBaseline = 'middle';
@@ -382,10 +424,7 @@ async function drawPage(pageNum) {
 function changePage(delta) {
   currentPage = Math.min(Math.max(1, currentPage + delta), totalPages);
   updatePageNav();
-  if (layoutData) {
-    renderSlotEditor(currentPage);
-    drawPage(currentPage);
-  }
+  if (layoutData) { renderSlotEditor(currentPage); drawPage(currentPage); }
 }
 
 function updatePageNav() {
@@ -394,21 +433,26 @@ function updatePageNav() {
   document.getElementById('nextPage').disabled = currentPage >= totalPages;
 }
 
-// ── PDF export ────────────────────────────────────────────────────────────────
+// ── PDF export ───────────────────────────────────────────────────────────────
 function submitPDF() {
   const batch = document.getElementById('batchInput').value.trim();
   if (!batch) { alert('Please enter batch input first.'); return; }
 
-  // Build slot_map: array of per-page arrays, each slot entry is label_name+img_path or null
+  // Build slot_map: pageIdx_slotIdx -> {img_path} or null
+  // Only send entries that differ from the original layout
   const slotMap = {};
-  if (layoutData && layoutData.layout) {
-    layoutData.layout.forEach(s => {
-      const key = (s.page - 1) + '_' + s.slot;
-      if (key in slotOverrides) {
-        slotMap[key] = null; // forced empty
+  Object.entries(pageAssignments).forEach(([pageNum, assigns]) => {
+    assigns.forEach((a, slotIdx) => {
+      const pidx = parseInt(pageNum) - 1;
+      const key  = pidx + '_' + slotIdx;
+      const orig = (layoutData.layout || []).find(s => s.page === parseInt(pageNum) && s.slot === slotIdx);
+      const origPath = orig ? orig.img_path : null;
+      const newPath  = a ? a.img_path : null;
+      if (newPath !== origPath) {
+        slotMap[key] = a ? { img_path: a.img_path } : null;
       }
     });
-  }
+  });
 
   document.getElementById('fBatch')    .value = batch;
   document.getElementById('fColorMode').value = document.getElementById('colorMode').value;
