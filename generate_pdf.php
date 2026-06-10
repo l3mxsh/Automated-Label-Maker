@@ -6,8 +6,8 @@ require 'functions.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') { header('Location: generate.php'); exit; }
 
-$batchText = trim($_POST['batch']         ?? '');
-$stkBatch  = trim($_POST['sticker_batch'] ?? '');
+$batchText = trim($_POST['batch']          ?? '');
+$stkBatch  = trim($_POST['sticker_batch']  ?? '');
 $bleed     = max(0, (float)($_POST['bleed']  ?? 0));
 $margin    = max(0, (float)($_POST['margin'] ?? 3));
 $gap       = max(0, (float)($_POST['gap']    ?? 3));
@@ -26,7 +26,6 @@ foreach ($parsed as $item)
     if (isset($item['label']))
         for ($i = 0; $i < $item['qty']; $i++) $slots[] = $item['label'];
 
-// Parse sticker batch
 $stickerLib = $db->query('SELECT id,name,img_path FROM stickers')->fetchAll();
 $stickerMap = [];
 foreach ($stickerLib as $s) $stickerMap[strtolower(trim($s['name']))] = $s;
@@ -46,7 +45,8 @@ if (empty($slots) && empty($stickerSlots)) { ob_end_clean(); die('No valid label
 $lw = !empty($slots) ? (float)$slots[0]['width_mm']  : 66.15;
 $lh = !empty($slots) ? (float)$slots[0]['height_mm'] : 40.75;
 
-$usableW = 210 - 2*$margin; $usableH = 297 - 2*$margin;
+$usableW = 210 - 2*$margin;
+$usableH = 297 - 2*$margin;
 $totalW  = 2*$lw + $lh + 2*$gap;
 $startX  = $margin + ($usableW - $totalW) / 2;
 $nGridH  = 6*($lh+$gap) - $gap;
@@ -58,13 +58,23 @@ $rStartX = $startX + 2*($lw+$gap);
 $slotsPerPage = 16;
 $labelPages   = !empty($slots) ? (int)ceil(count($slots) / $slotsPerPage) : 0;
 
-// Sticker grid: no gap, centered within margin
-$stkCols      = max(1, (int)floor($usableW / STK_W));
-$stkRows      = max(1, (int)floor($usableH / STK_H));
-$perStkPage   = $stkCols * $stkRows;
-$stkStartX    = $margin + ($usableW - $stkCols * STK_W) / 2;
-$stkStartY    = $margin + ($usableH - $stkRows * STK_H) / 2;
-$stickerPages = !empty($stickerSlots) ? (int)ceil(count($stickerSlots) / $perStkPage) : 0;
+// All 16 label slot positions (same every page)
+$allSlotPos = [];
+for ($s = 0; $s < $slotsPerPage; $s++) {
+    if ($s < 12) {
+        $col=$s%2; $row=(int)floor($s/2);
+        $x=$startX+$col*($lw+$gap); $y=$nStartY+$row*($lh+$gap); $w=$lw; $h=$lh;
+    } else {
+        $row=$s-12; $x=$rStartX; $y=$rStartY+$row*($lw+$gap); $w=$lh; $h=$lw;
+    }
+    $allSlotPos[$s] = [$x,$y,$w,$h];
+}
+
+// Overflow sticker page geometry (full page, no labels)
+$stkCols   = max(1, (int)floor($usableW / STK_W));
+$stkRows   = max(1, (int)floor($usableH / STK_H));
+$stkStartX = $margin + ($usableW - $stkCols*STK_W) / 2;
+$stkStartY = $margin + ($usableH - $stkRows*STK_H) / 2;
 
 // GD rotate 90° CW
 $rotCache = [];
@@ -91,9 +101,44 @@ $pdf->setPrintHeader(false);
 $pdf->setPrintFooter(false);
 $pdf->SetMargins(0,0,0);
 
-// ── Label pages ──
+$stickerIdx = 0;
+
+// ── Label pages: stickers fill free cells, labels drawn on top ──
 for ($pageIdx = 0; $pageIdx < $labelPages; $pageIdx++) {
     $pdf->AddPage();
+
+    // Which slots are filled on this page?
+    $filledRects = [];
+    for ($s = 0; $s < $slotsPerPage; $s++) {
+        $slotIdx     = $pageIdx * $slotsPerPage + $s;
+        $overrideKey = $pageIdx . '_' . $s;
+        $isFilled = array_key_exists($overrideKey, $slotMap)
+            ? ($slotMap[$overrideKey] !== null)
+            : ($slotIdx < count($slots));
+        if ($isFilled) $filledRects[] = $allSlotPos[$s];
+    }
+
+    // Draw stickers in free cells (not overlapping any filled label slot)
+    for ($ty = $margin; $ty + STK_H <= 297-$margin+0.001; $ty += STK_H) {
+        for ($tx = $margin; $tx + STK_W <= 210-$margin+0.001; $tx += STK_W) {
+            if ($stickerIdx >= count($stickerSlots)) break 2;
+            $blocked = false;
+            foreach ($filledRects as [$lx,$ly,$lw2,$lh2]) {
+                if ($tx < $lx+$lw2 && $tx+STK_W > $lx && $ty < $ly+$lh2 && $ty+STK_H > $ly) {
+                    $blocked = true; break;
+                }
+            }
+            if ($blocked) continue;
+            $stk  = $stickerSlots[$stickerIdx++];
+            $path = $stk['img_path'];
+            if (!$path || !file_exists($path)) continue;
+            $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+            $type = ($ext==='png') ? 'PNG' : 'JPEG';
+            $pdf->Image($path, $tx, $ty, STK_W, STK_H, $type,'','N',false,0,'',false,false,0);
+        }
+    }
+
+    // Draw labels on top
     for ($s = 0; $s < $slotsPerPage; $s++) {
         $slotIdx     = $pageIdx * $slotsPerPage + $s;
         $overrideKey = $pageIdx . '_' . $s;
@@ -108,26 +153,22 @@ for ($pageIdx = 0; $pageIdx < $labelPages; $pageIdx++) {
         if (!$path || !file_exists($path)) continue;
         $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));
         $type = ($ext==='png') ? 'PNG' : 'JPEG';
+        [$x,$y,$w,$h] = $allSlotPos[$s];
 
         if ($s < 12) {
-            $col=$s%2; $row=(int)floor($s/2);
-            $x=$startX+$col*($lw+$gap); $y=$nStartY+$row*($lh+$gap);
-            $pdf->Image($path,$x-$bleed,$y-$bleed,$lw+2*$bleed,$lh+2*$bleed,$type,'','N',false,0,'',false,false,0);
+            $pdf->Image($path, $x-$bleed, $y-$bleed, $w+2*$bleed, $h+2*$bleed, $type,'','N',false,0,'',false,false,0);
         } else {
-            $row=$s-12; $x=$rStartX; $y=$rStartY+$row*($lw+$gap);
-            $rp=getRotatedPath($path,$ext);
-            $pdf->Image($rp,$x-$bleed,$y-$bleed,$lh+2*$bleed,$lw+2*$bleed,$type,'','N',false,0,'',false,false,0);
+            $rp = getRotatedPath($path, $ext);
+            $pdf->Image($rp, $x-$bleed, $y-$bleed, $w+2*$bleed, $h+2*$bleed, $type,'','N',false,0,'',false,false,0);
         }
     }
 }
 
-// ── Sticker pages ──
-$stickerIdx = 0;
-for ($p = 0; $p < $stickerPages; $p++) {
+// ── Overflow sticker pages ──
+while ($stickerIdx < count($stickerSlots)) {
     $pdf->AddPage();
-    for ($row = 0; $row < $stkRows; $row++) {
-        for ($col = 0; $col < $stkCols; $col++) {
-            if ($stickerIdx >= count($stickerSlots)) break 2;
+    for ($row = 0; $row < $stkRows && $stickerIdx < count($stickerSlots); $row++) {
+        for ($col = 0; $col < $stkCols && $stickerIdx < count($stickerSlots); $col++) {
             $stk  = $stickerSlots[$stickerIdx++];
             $path = $stk['img_path'];
             if (!$path || !file_exists($path)) continue;
@@ -135,10 +176,10 @@ for ($p = 0; $p < $stickerPages; $p++) {
             $type = ($ext==='png') ? 'PNG' : 'JPEG';
             $tx   = $stkStartX + $col * STK_W;
             $ty   = $stkStartY + $row * STK_H;
-            $pdf->Image($path,$tx,$ty,STK_W,STK_H,$type,'','N',false,0,'',false,false,0);
+            $pdf->Image($path, $tx, $ty, STK_W, STK_H, $type,'','N',false,0,'',false,false,0);
         }
     }
 }
 
 foreach ($rotCache as $tmp) @unlink($tmp);
-$pdf->Output('ovxi_labels_'.date('Ymd_His').'.pdf','D');
+$pdf->Output('ovxi_labels_'.date('Ymd_His').'.pdf', 'D');
