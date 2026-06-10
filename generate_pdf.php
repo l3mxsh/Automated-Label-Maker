@@ -6,114 +6,139 @@ require 'functions.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') { header('Location: generate.php'); exit; }
 
-$batchText = trim($_POST['batch']  ?? '');
+$batchText = trim($_POST['batch']         ?? '');
+$stkBatch  = trim($_POST['sticker_batch'] ?? '');
 $bleed     = max(0, (float)($_POST['bleed']  ?? 0));
 $margin    = max(0, (float)($_POST['margin'] ?? 3));
 $gap       = max(0, (float)($_POST['gap']    ?? 3));
-$dpi       = in_array((int)($_POST['dpi'] ?? 300), [150, 300]) ? (int)$_POST['dpi'] : 300;
+$dpi       = in_array((int)($_POST['dpi'] ?? 300), [150,300]) ? (int)$_POST['dpi'] : 300;
 $slotMap   = json_decode($_POST['slot_map'] ?? '{}', true) ?: [];
+
+define('STK_W', 50.8);
+define('STK_H', 22.098);
 
 $db     = getDB();
 $labels = $db->query('SELECT id,name,code,svg_path,width_mm,height_mm FROM labels')->fetchAll();
 $parsed = parseBatchInput($batchText, $labels);
 
 $slots = [];
-foreach ($parsed as $item) {
-    if (!isset($item['label'])) continue;
-    for ($i = 0; $i < $item['qty']; $i++) $slots[] = $item['label'];
+foreach ($parsed as $item)
+    if (isset($item['label']))
+        for ($i = 0; $i < $item['qty']; $i++) $slots[] = $item['label'];
+
+// Parse sticker batch
+$stickerLib = $db->query('SELECT id,name,img_path FROM stickers')->fetchAll();
+$stickerMap = [];
+foreach ($stickerLib as $s) $stickerMap[strtolower(trim($s['name']))] = $s;
+$stickerSlots = [];
+foreach (explode("\n", $stkBatch) as $line) {
+    $line = trim($line);
+    if (!$line) continue;
+    if (preg_match('/^(.+?)\s+(\d+)$/', $line, $m)) {
+        $key = strtolower(trim($m[1])); $qty = (int)$m[2];
+        if (isset($stickerMap[$key]))
+            for ($i = 0; $i < $qty; $i++) $stickerSlots[] = $stickerMap[$key];
+    }
 }
 
-if (empty($slots)) { ob_end_clean(); die('No valid labels in batch input.'); }
+if (empty($slots) && empty($stickerSlots)) { ob_end_clean(); die('No valid labels or stickers.'); }
 
-$ref = $slots[0];
-$lw  = (float)$ref['width_mm'];
-$lh  = (float)$ref['height_mm'];
+$lw = !empty($slots) ? (float)$slots[0]['width_mm']  : 66.15;
+$lh = !empty($slots) ? (float)$slots[0]['height_mm'] : 40.75;
 
-$usableW = 210 - 2 * $margin;
-$usableH = 297 - 2 * $margin;
-$totalW  = 2 * $lw + $lh + 2 * $gap;
+$usableW = 210 - 2*$margin; $usableH = 297 - 2*$margin;
+$totalW  = 2*$lw + $lh + 2*$gap;
 $startX  = $margin + ($usableW - $totalW) / 2;
-$nGridH  = 6 * ($lh + $gap) - $gap;
+$nGridH  = 6*($lh+$gap) - $gap;
 $nStartY = $margin + ($usableH - $nGridH) / 2;
-$rGridH  = 4 * ($lw + $gap) - $gap;
+$rGridH  = 4*($lw+$gap) - $gap;
 $rStartY = $margin + ($usableH - $rGridH) / 2;
-$rStartX = $startX + 2 * ($lw + $gap);
+$rStartX = $startX + 2*($lw+$gap);
 
 $slotsPerPage = 16;
-$totalPages   = (int)ceil(count($slots) / $slotsPerPage);
+$labelPages   = !empty($slots) ? (int)ceil(count($slots) / $slotsPerPage) : 0;
 
-// GD rotate 90° CW and cache to temp file
+// Sticker grid: no gap, centered within margin
+$stkCols      = max(1, (int)floor($usableW / STK_W));
+$stkRows      = max(1, (int)floor($usableH / STK_H));
+$perStkPage   = $stkCols * $stkRows;
+$stkStartX    = $margin + ($usableW - $stkCols * STK_W) / 2;
+$stkStartY    = $margin + ($usableH - $stkRows * STK_H) / 2;
+$stickerPages = !empty($stickerSlots) ? (int)ceil(count($stickerSlots) / $perStkPage) : 0;
+
+// GD rotate 90° CW
 $rotCache = [];
 function getRotatedPath(string $path, string $ext): string {
     global $rotCache;
     if (isset($rotCache[$path])) return $rotCache[$path];
-    $src = ($ext === 'png') ? imagecreatefrompng($path) : imagecreatefromjpeg($path);
-    // Preserve full color depth
-    imagealphablending($src, false);
-    imagesavealpha($src, true);
-    $rotated = imagerotate($src, -90, 0);
-    imagealphablending($rotated, false);
-    imagesavealpha($rotated, true);
-    $tmp = tempnam(sys_get_temp_dir(), 'lbl_') . '.' . $ext;
-    if ($ext === 'png') {
-        imagepng($rotated, $tmp, 0); // 0 = no compression, maximum quality
-    } else {
-        imagejpeg($rotated, $tmp, 100); // 100 = max JPEG quality
-    }
-    imagedestroy($src);
-    imagedestroy($rotated);
+    $src = ($ext==='png') ? imagecreatefrompng($path) : imagecreatefromjpeg($path);
+    imagealphablending($src,false); imagesavealpha($src,true);
+    $rot = imagerotate($src,-90,0);
+    imagealphablending($rot,false); imagesavealpha($rot,true);
+    $tmp = tempnam(sys_get_temp_dir(),'lbl_').'.'.$ext;
+    ($ext==='png') ? imagepng($rot,$tmp,0) : imagejpeg($rot,$tmp,100);
+    imagedestroy($src); imagedestroy($rot);
     return $rotCache[$path] = $tmp;
 }
 
 ob_end_clean();
 
-$pdf = new TCPDF('P', 'mm', 'A4', true, 'UTF-8', false);
+$pdf = new TCPDF('P','mm','A4',true,'UTF-8',false);
 $pdf->SetCreator('OVXI Label Positioner');
 $pdf->SetTitle('Labels');
 $pdf->SetAutoPageBreak(false);
 $pdf->setPrintHeader(false);
 $pdf->setPrintFooter(false);
-$pdf->SetMargins(0, 0, 0);
+$pdf->SetMargins(0,0,0);
 
-for ($pageIdx = 0; $pageIdx < $totalPages; $pageIdx++) {
+// ── Label pages ──
+for ($pageIdx = 0; $pageIdx < $labelPages; $pageIdx++) {
     $pdf->AddPage();
-
     for ($s = 0; $s < $slotsPerPage; $s++) {
         $slotIdx     = $pageIdx * $slotsPerPage + $s;
         $overrideKey = $pageIdx . '_' . $s;
-
-        // Resolve image path for this slot
+        $path = null;
         if (array_key_exists($overrideKey, $slotMap)) {
-            if ($slotMap[$overrideKey] === null) continue; // forced empty
+            if ($slotMap[$overrideKey] === null) continue;
             $path = $slotMap[$overrideKey]['img_path'] ?? null;
         } elseif ($slotIdx < count($slots)) {
             $path = $slots[$slotIdx]['svg_path'];
-        } else {
-            continue; // no label assigned to this slot
-        }
+        } else { continue; }
 
         if (!$path || !file_exists($path)) continue;
         $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-        $type = ($ext === 'png') ? 'PNG' : 'JPEG';
+        $type = ($ext==='png') ? 'PNG' : 'JPEG';
 
         if ($s < 12) {
-            $col = $s % 2;
-            $row = (int)floor($s / 2);
-            $x   = $startX + $col * ($lw + $gap);
-            $y   = $nStartY + $row * ($lh + $gap);
-            $pdf->Image($path, $x - $bleed, $y - $bleed, $lw + 2*$bleed, $lh + 2*$bleed, $type, '', 'N', false, 0, '', false, false, 0);
+            $col=$s%2; $row=(int)floor($s/2);
+            $x=$startX+$col*($lw+$gap); $y=$nStartY+$row*($lh+$gap);
+            $pdf->Image($path,$x-$bleed,$y-$bleed,$lw+2*$bleed,$lh+2*$bleed,$type,'','N',false,0,'',false,false,0);
         } else {
-            $row     = $s - 12;
-            $x       = $rStartX;
-            $y       = $rStartY + $row * ($lw + $gap);
-            $rotPath = getRotatedPath($path, $ext);
-            $pdf->Image($rotPath, $x - $bleed, $y - $bleed, $lh + 2*$bleed, $lw + 2*$bleed, $type, '', 'N', false, 0, '', false, false, 0);
+            $row=$s-12; $x=$rStartX; $y=$rStartY+$row*($lw+$gap);
+            $rp=getRotatedPath($path,$ext);
+            $pdf->Image($rp,$x-$bleed,$y-$bleed,$lh+2*$bleed,$lw+2*$bleed,$type,'','N',false,0,'',false,false,0);
         }
     }
 }
 
-// Clean up temp files
-foreach ($rotCache as $tmp) @unlink($tmp);
+// ── Sticker pages ──
+$stickerIdx = 0;
+for ($p = 0; $p < $stickerPages; $p++) {
+    $pdf->AddPage();
+    for ($row = 0; $row < $stkRows; $row++) {
+        for ($col = 0; $col < $stkCols; $col++) {
+            if ($stickerIdx >= count($stickerSlots)) break 2;
+            $stk  = $stickerSlots[$stickerIdx++];
+            $path = $stk['img_path'];
+            if (!$path || !file_exists($path)) continue;
+            $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+            $type = ($ext==='png') ? 'PNG' : 'JPEG';
+            $tx   = $stkStartX + $col * STK_W;
+            $ty   = $stkStartY + $row * STK_H;
+            $pdf->Image($path,$tx,$ty,STK_W,STK_H,$type,'','N',false,0,'',false,false,0);
+        }
+    }
+}
 
-$filename = 'ovxi_labels_' . date('Ymd_His') . '.pdf';
-$pdf->Output($filename, 'D');
+foreach ($rotCache as $tmp) @unlink($tmp);
+$pdf->Output('ovxi_labels_'.date('Ymd_His').'.pdf','D');

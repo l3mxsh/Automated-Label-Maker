@@ -35,6 +35,7 @@ label.field-label{display:block;font-size:12px;color:#666;margin-bottom:4px}
   <span class="brand">OVXI</span>
   <a href="generate.php" class="<?= $active==='generate'?'active':'' ?>">Generate PDF</a>
   <a href="labels.php"   class="<?= $active==='labels'  ?'active':'' ?>">Label Library</a>
+  <a href="stickers.php" class="<?= $active==='stickers'?'active':'' ?>">Sticker Library</a>
 </nav>
 <div class="page">
 <?php }
