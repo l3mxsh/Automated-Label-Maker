@@ -79,20 +79,20 @@ for ($pageIdx = 0; $pageIdx < $totalPages; $pageIdx++) {
     $pdf->AddPage();
 
     for ($s = 0; $s < $slotsPerPage; $s++) {
-        $slotIdx = $pageIdx * $slotsPerPage + $s;
-        if ($slotIdx >= count($slots)) break;
-
-        $label = $slots[$slotIdx];
+        $slotIdx     = $pageIdx * $slotsPerPage + $s;
         $overrideKey = $pageIdx . '_' . $s;
+
+        // Resolve image path for this slot
         if (array_key_exists($overrideKey, $slotMap)) {
             if ($slotMap[$overrideKey] === null) continue; // forced empty
-            // Swapped: use override img_path
             $path = $slotMap[$overrideKey]['img_path'] ?? null;
-            if (!$path || !file_exists($path)) continue;
+        } elseif ($slotIdx < count($slots)) {
+            $path = $slots[$slotIdx]['svg_path'];
         } else {
-            $path = $label['svg_path'];
-            if (!file_exists($path)) continue;
+            continue; // no label assigned to this slot
         }
+
+        if (!$path || !file_exists($path)) continue;
         $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));
         $type = ($ext === 'png') ? 'PNG' : 'JPEG';
 
@@ -101,7 +101,6 @@ for ($pageIdx = 0; $pageIdx < $totalPages; $pageIdx++) {
             $row = (int)floor($s / 2);
             $x   = $startX + $col * ($lw + $gap);
             $y   = $nStartY + $row * ($lh + $gap);
-            // resize=false: embed full resolution image, no TCPDF resampling
             $pdf->Image($path, $x - $bleed, $y - $bleed, $lw + 2*$bleed, $lh + 2*$bleed, $type, '', 'N', false, 0, '', false, false, 0);
         } else {
             $row     = $s - 12;
