@@ -11,6 +11,7 @@ $bleed     = max(0, (float)($_POST['bleed']  ?? 0));
 $margin    = max(0, (float)($_POST['margin'] ?? 3));
 $gap       = max(0, (float)($_POST['gap']    ?? 3));
 $dpi       = in_array((int)($_POST['dpi'] ?? 300), [150, 300]) ? (int)$_POST['dpi'] : 300;
+$slotMap   = json_decode($_POST['slot_map'] ?? '{}', true) ?: [];
 
 $db     = getDB();
 $labels = $db->query('SELECT id,name,code,svg_path,width_mm,height_mm FROM labels')->fetchAll();
@@ -78,6 +79,10 @@ for ($pageIdx = 0; $pageIdx < $totalPages; $pageIdx++) {
         if ($slotIdx >= count($slots)) break;
 
         $label = $slots[$slotIdx];
+        // Check slot override — key is "pageIdx_slotIndex"
+        $overrideKey = $pageIdx . '_' . $s;
+        if (array_key_exists($overrideKey, $slotMap)) continue; // forced empty
+
         $path  = $label['svg_path'];
         if (!file_exists($path)) continue;
         $ext  = strtolower(pathinfo($path, PATHINFO_EXTENSION));

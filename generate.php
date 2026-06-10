@@ -18,10 +18,10 @@ pageHeader('Generate PDF', 'generate');
 .center{flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;align-items:center;gap:12px}
 #a4Canvas{border:0.5px solid #d0d0d0;background:#fff;display:block;width:420px;height:595px}
 .canvas-meta{font-size:12px;color:#666;text-align:center}
-.right-panel{width:260px;border-left:0.5px solid #d0d0d0;overflow-y:auto;flex-shrink:0;padding:16px;display:flex;flex-direction:column;gap:16px}
+.right-panel{width:280px;border-left:0.5px solid #d0d0d0;overflow-y:auto;flex-shrink:0;padding:16px;display:flex;flex-direction:column;gap:16px}
 .panel-section{display:flex;flex-direction:column;gap:8px}
 .panel-title{font-size:11px;font-weight:600;color:#999;letter-spacing:.06em;text-transform:uppercase;padding-bottom:6px;border-bottom:0.5px solid #e0e0e0}
-#batchInput{height:160px;resize:vertical;font-size:12px;font-family:monospace;line-height:1.6}
+#batchInput{height:120px;resize:vertical;font-size:12px;font-family:monospace;line-height:1.6}
 .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .stat-box{border:0.5px solid #e0e0e0;padding:8px 10px}
 .stat-box .sv{font-size:18px;font-weight:600}
@@ -31,6 +31,19 @@ pageHeader('Generate PDF', 'generate');
 .settings-row>div{display:flex;flex-direction:column;gap:4px}
 .page-nav{display:flex;align-items:center;gap:8px;font-size:12px}
 .page-nav button{padding:3px 9px;font-size:12px}
+/* Slot editor */
+#slotEditor{display:none}
+.slot-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.slot-item{border:0.5px solid #d0d0d0;padding:5px 7px;font-size:11px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:4px;min-height:28px;transition:background .1s}
+.slot-item:hover{background:#f5f5f5}
+.slot-item.empty{border-style:dashed;color:#bbb}
+.slot-item.rotated-slot{border-left:2px solid #000}
+.slot-item .sn{font-size:10px;color:#bbb;flex-shrink:0}
+.slot-item .sl-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.slot-item .clr{font-size:10px;color:#999;cursor:pointer;padding:0 2px}
+.slot-item .clr:hover{color:#000}
+.slot-legend{font-size:11px;color:#666;display:flex;gap:12px}
+.slot-legend span{display:flex;align-items:center;gap:4px}
 </style>
 
 <div class="gen-layout">
@@ -72,6 +85,19 @@ pageHeader('Generate PDF', 'generate');
       <div class="batch-errors" id="batchErrors"></div>
     </div>
 
+    <!-- SLOT EDITOR -->
+    <div class="panel-section" id="slotEditor">
+      <div class="panel-title" style="display:flex;justify-content:space-between">
+        <span>Slot Order — Page <span id="sePageNum">1</span></span>
+        <button style="font-size:10px;padding:2px 7px" onclick="resetSlotOverrides()">Reset</button>
+      </div>
+      <div class="slot-legend">
+        <span><span style="border-left:2px solid #000;padding-left:3px">■</span> Rotated</span>
+        <span style="color:#bbb">Click &times; to empty a slot</span>
+      </div>
+      <div class="slot-grid" id="slotGrid"></div>
+    </div>
+
     <div class="panel-section">
       <div class="panel-title">Output Settings</div>
       <div class="settings-row">
@@ -99,10 +125,6 @@ pageHeader('Generate PDF', 'generate');
           <label class="field-label">Gap (mm)</label>
           <input type="number" id="gap" value="3" min="0" max="10" step="0.5">
         </div>
-        <div>
-          <label class="field-label">Margin (mm)</label>
-          <input type="number" id="margin" value="3" min="0" max="20" step="1">
-        </div>
       </div>
     </div>
 
@@ -123,6 +145,7 @@ pageHeader('Generate PDF', 'generate');
       <input type="hidden" name="dpi"        id="fDpi">
       <input type="hidden" name="margin"     id="fMargin">
       <input type="hidden" name="gap"        id="fGap">
+      <input type="hidden" name="slot_map"   id="fSlotMap">
       <button type="button" class="primary" style="width:100%;padding:10px" onclick="submitPDF()">Export PDF</button>
     </form>
   </div>
@@ -131,9 +154,13 @@ pageHeader('Generate PDF', 'generate');
 <script>
 const canvas = document.getElementById('a4Canvas');
 const ctx    = canvas.getContext('2d');
-const MM2PX  = canvas.width / 210; // 840/210 = 4px per mm — matches A4 exactly
+const MM2PX  = canvas.width / 210;
 let currentPage = 1, totalPages = 1, layoutData = null;
 const imgCache = {};
+
+// slotOverrides: { "pageIdx_slotIdx": null }  — null means forced empty
+// key format: "0_3" = page 1, slot index 3
+let slotOverrides = {};
 
 function loadImg(path) {
   if (imgCache[path]) return Promise.resolve(imgCache[path]);
@@ -145,7 +172,6 @@ function loadImg(path) {
   });
 }
 
-// Sidebar click: show SVG preview
 document.querySelectorAll('.sidebar-item').forEach(el => {
   el.addEventListener('click', () => {
     document.querySelectorAll('.sidebar-item').forEach(x => x.classList.remove('active'));
@@ -155,7 +181,6 @@ document.querySelectorAll('.sidebar-item').forEach(el => {
   });
 });
 
-// Debounced preview trigger
 let debounceTimer;
 function schedulePreview() {
   clearTimeout(debounceTimer);
@@ -174,16 +199,108 @@ async function fetchPreview() {
   const res  = await fetch('api/preview.php?batch=' + encodeURIComponent(batch) + '&margin=' + margin + '&gap=' + gap);
   const data = await res.json();
 
-  // Dimensions come directly from preview API response
   layoutData  = data;
   totalPages  = data.pages || 1;
   currentPage = Math.min(currentPage, totalPages);
+
+  // Reset overrides when batch changes
+  slotOverrides = {};
+
   updateStats(data);
   showErrors(data.errors || []);
+  renderSlotEditor(currentPage);
   drawPage(currentPage);
   updatePageNav();
 }
 
+// ── Slot editor ──────────────────────────────────────────────────────────────
+function renderSlotEditor(pageNum) {
+  if (!layoutData || !layoutData.layout) return;
+  document.getElementById('slotEditor').style.display = 'block';
+  document.getElementById('sePageNum').textContent = pageNum;
+
+  const grid     = document.getElementById('slotGrid');
+  const pageSlots = layoutData.layout.filter(s => s.page === pageNum);
+  grid.innerHTML  = '';
+
+  pageSlots.forEach((slot, i) => {
+    const key      = (pageNum - 1) + '_' + slot.slot;
+    const isEmpty  = (key in slotOverrides); // forced empty
+    const hasLabel = !isEmpty && slot.label_name;
+
+    const div = document.createElement('div');
+    div.className = 'slot-item' + (isEmpty ? ' empty' : '') + (slot.rotated ? ' rotated-slot' : '');
+
+    const numEl  = document.createElement('span');
+    numEl.className = 'sn';
+    numEl.textContent = (slot.slot + 1);
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'sl-name';
+    nameEl.textContent = isEmpty ? '(empty)' : (slot.label_name || '—');
+
+    div.appendChild(numEl);
+    div.appendChild(nameEl);
+
+    if (hasLabel) {
+      const clr = document.createElement('span');
+      clr.className   = 'clr';
+      clr.textContent = '✕';
+      clr.title       = 'Clear this slot';
+      clr.onclick = (e) => {
+        e.stopPropagation();
+        slotOverrides[key] = null;
+        renderSlotEditor(pageNum);
+        drawPage(pageNum);
+        updateStatsFromOverrides();
+      };
+      div.appendChild(clr);
+    } else if (isEmpty) {
+      const rst = document.createElement('span');
+      rst.className   = 'clr';
+      rst.textContent = '↺';
+      rst.title       = 'Restore slot';
+      rst.onclick = (e) => {
+        e.stopPropagation();
+        delete slotOverrides[key];
+        renderSlotEditor(pageNum);
+        drawPage(pageNum);
+        updateStatsFromOverrides();
+      };
+      div.appendChild(rst);
+    }
+
+    grid.appendChild(div);
+  });
+}
+
+function resetSlotOverrides() {
+  slotOverrides = {};
+  renderSlotEditor(currentPage);
+  drawPage(currentPage);
+  updateStatsFromOverrides();
+}
+
+function updateStatsFromOverrides() {
+  if (!layoutData) return;
+  const forcedEmpty = Object.keys(slotOverrides).filter(k => k.startsWith((currentPage-1)+'_')).length;
+  document.getElementById('stFilled').textContent = (layoutData.filled || 0) - forcedEmpty;
+  document.getElementById('stEmpty') .textContent = (layoutData.empty  || 0) + forcedEmpty;
+}
+
+// Apply overrides to a copy of layout slots for the current page
+function getEffectiveSlots(pageNum) {
+  if (!layoutData) return [];
+  return layoutData.layout
+    .filter(s => s.page === pageNum)
+    .map(s => {
+      const key = (pageNum - 1) + '_' + s.slot;
+      if (key in slotOverrides) return { ...s, label_name: null, label_code: null, img_path: null };
+      return s;
+    });
+}
+
+// ── Stats ────────────────────────────────────────────────────────────────────
 function updateStats(d) {
   document.getElementById('stTotal') .textContent = (d.pages || 0) * (d.slots_per_page || 0);
   document.getElementById('stFilled').textContent = d.filled || 0;
@@ -198,15 +315,16 @@ function showErrors(errors) {
   el.innerHTML = errors.map(e => '&#9888; "' + (e.name || e.raw) + '": ' + e.error).join('<br>');
 }
 
-// Canvas drawing
+// ── Canvas ────────────────────────────────────────────────────────────────────
 function resetCanvas() {
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   drawBorder();
-  layoutData = null; totalPages = 1;
+  layoutData = null; totalPages = 1; slotOverrides = {};
   updateStats({pages:0, slots_per_page:0, filled:0, empty:0});
   document.getElementById('pageIndicator').textContent = 'Page 1 / 1';
   document.getElementById('canvasMeta').textContent = 'A4 \u2014 210 \u00d7 297 mm';
+  document.getElementById('slotEditor').style.display = 'none';
 }
 
 function drawBorder() {
@@ -222,19 +340,18 @@ async function drawPage(pageNum) {
   drawBorder();
   if (!layoutData || !layoutData.layout) return;
 
-  const pageSlots = layoutData.layout.filter(s => s.page === pageNum);
-  const uniquePaths = [...new Set(pageSlots.filter(s => s.img_path).map(s => s.img_path))];
+  const slots = getEffectiveSlots(pageNum);
+  const uniquePaths = [...new Set(slots.filter(s => s.img_path).map(s => s.img_path))];
   await Promise.all(uniquePaths.map(p => loadImg(p)));
 
-  pageSlots.forEach(slot => {
-    const x = slot.x_mm * MM2PX;
-    const y = slot.y_mm * MM2PX;
-    const w = slot.w_mm * MM2PX;
-    const h = slot.h_mm * MM2PX;
+  slots.forEach(slot => {
+    const x   = slot.x_mm * MM2PX;
+    const y   = slot.y_mm * MM2PX;
+    const w   = slot.w_mm * MM2PX;
+    const h   = slot.h_mm * MM2PX;
     const img = slot.img_path ? imgCache[slot.img_path] : null;
 
     if (slot.rotated && img) {
-      // 90° CW: translate to slot centre, rotate, draw centred
       ctx.save();
       ctx.translate(x + w / 2, y + h / 2);
       ctx.rotate(Math.PI / 2);
@@ -243,24 +360,32 @@ async function drawPage(pageNum) {
     } else if (img) {
       ctx.drawImage(img, x, y, w, h);
     } else {
-      ctx.fillStyle = slot.label_name ? '#f0f0f0' : '#fff';
-      ctx.fillRect(x, y, w, h);
-      ctx.strokeStyle = slot.label_name ? '#000' : '#ddd';
-      ctx.lineWidth = 0.5;
-      ctx.setLineDash(slot.label_name ? [] : [3, 3]);
-      ctx.strokeRect(x, y, w, h);
+      // Empty or no image: draw outline
+      ctx.strokeStyle = slot.label_name ? '#aaa' : '#e0e0e0';
+      ctx.lineWidth   = 0.5;
+      ctx.setLineDash(slot.label_name ? [] : [4, 3]);
+      ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
       ctx.setLineDash([]);
+      // Slot number
+      ctx.fillStyle    = '#ccc';
+      ctx.font         = '10px system-ui,sans-serif';
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('#' + (slot.slot + 1), x + w / 2, y + h / 2);
     }
   });
 
   document.getElementById('canvasMeta').textContent =
-    'A4 — 210 × 297 mm  |  12 normal + 4 rotated = 16 slots';
+    'A4 \u2014 210 \u00d7 297 mm  |  12 normal + 4 rotated = 16 slots';
 }
 
 function changePage(delta) {
   currentPage = Math.min(Math.max(1, currentPage + delta), totalPages);
   updatePageNav();
-  if (layoutData) drawPage(currentPage);
+  if (layoutData) {
+    renderSlotEditor(currentPage);
+    drawPage(currentPage);
+  }
 }
 
 function updatePageNav() {
@@ -269,15 +394,29 @@ function updatePageNav() {
   document.getElementById('nextPage').disabled = currentPage >= totalPages;
 }
 
+// ── PDF export ────────────────────────────────────────────────────────────────
 function submitPDF() {
   const batch = document.getElementById('batchInput').value.trim();
   if (!batch) { alert('Please enter batch input first.'); return; }
+
+  // Build slot_map: array of per-page arrays, each slot entry is label_name+img_path or null
+  const slotMap = {};
+  if (layoutData && layoutData.layout) {
+    layoutData.layout.forEach(s => {
+      const key = (s.page - 1) + '_' + s.slot;
+      if (key in slotOverrides) {
+        slotMap[key] = null; // forced empty
+      }
+    });
+  }
+
   document.getElementById('fBatch')    .value = batch;
   document.getElementById('fColorMode').value = document.getElementById('colorMode').value;
   document.getElementById('fBleed')    .value = document.getElementById('bleed').value;
   document.getElementById('fDpi')      .value = document.getElementById('dpi').value;
   document.getElementById('fMargin')   .value = document.getElementById('margin').value;
   document.getElementById('fGap')      .value = document.getElementById('gap').value;
+  document.getElementById('fSlotMap')  .value = JSON.stringify(slotMap);
   document.getElementById('pdfForm').submit();
 }
 
